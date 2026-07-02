@@ -321,6 +321,7 @@ function Home({ state, updateState }) {
   const [query, setQuery] = useState("");
   const [isComposerOpen, setComposerOpen] = useState(false);
   const [isFolderOpen, setFolderOpen] = useState(false);
+  const [selectedItemId, setSelectedItemId] = useState(null);
 
   const stats = useMemo(
     () => ({
@@ -381,6 +382,7 @@ function Home({ state, updateState }) {
       ...current,
       items: current.items.filter((item) => item.id !== id),
     }));
+    setSelectedItemId((currentId) => (currentId === id ? null : currentId));
   };
 
   const revisitItem = (id) => {
@@ -475,6 +477,8 @@ function Home({ state, updateState }) {
     }));
   };
 
+  const selectedItem = state.items.find((item) => item.id === selectedItemId);
+
   return (
     <main className="page">
       <section className="phone-shell" aria-label="마파이빙 홈">
@@ -527,6 +531,7 @@ function Home({ state, updateState }) {
           folders={state.folders}
           onDelete={deleteItem}
           onRevisit={revisitItem}
+          onOpenItem={(item) => setSelectedItemId(item.id)}
           onOpenComposer={() => setComposerOpen(true)}
         />
       </section>
@@ -548,6 +553,16 @@ function Home({ state, updateState }) {
           onAdd={addFolder}
           onDelete={deleteFolder}
           onClose={() => setFolderOpen(false)}
+        />
+      ) : null}
+
+      {selectedItem ? (
+        <ItemDetail
+          item={selectedItem}
+          folder={state.folders.find((folder) => folder.id === selectedItem.folderId)}
+          onClose={() => setSelectedItemId(null)}
+          onDelete={deleteItem}
+          onRevisit={revisitItem}
         />
       ) : null}
     </main>
@@ -821,7 +836,14 @@ function SortTabs({ sortBy, setSortBy }) {
   );
 }
 
-function ContentList({ items, folders, onDelete, onRevisit, onOpenComposer }) {
+function ContentList({
+  items,
+  folders,
+  onDelete,
+  onRevisit,
+  onOpenComposer,
+  onOpenItem,
+}) {
   if (items.length === 0) {
     return (
       <section className="empty-state">
@@ -847,61 +869,165 @@ function ContentList({ items, folders, onDelete, onRevisit, onOpenComposer }) {
           folder={folders.find((folder) => folder.id === item.folderId)}
           onDelete={onDelete}
           onRevisit={onRevisit}
+          onOpen={() => onOpenItem(item)}
         />
       ))}
     </section>
   );
 }
 
-function ContentCard({ item, folder, onDelete, onRevisit }) {
+function ContentCard({ item, folder, onDelete, onRevisit, onOpen }) {
   const TypeIcon =
     item.type === "image" ? ImageIcon : item.type === "note" ? FileText : LinkIcon;
 
   return (
     <article className={`content-card ${item.type}`}>
-      <div className="card-thumb">
-        {item.type === "image" && item.image ? (
-          <img src={item.image} alt="" />
+      <button
+        className="card-main"
+        type="button"
+        onClick={onOpen}
+        aria-label={`${item.title} 크게 보기`}
+      >
+        <div className="card-thumb">
+          {item.type === "image" && item.image ? (
+            <img src={item.image} alt="" />
+          ) : (
+            <TypeIcon size={24} />
+          )}
+        </div>
+        <div className="card-body">
+          <div className="card-meta">
+            <span>{folder?.name || "전체"}</span>
+            <span>{formatDate(item.createdAt)}</span>
+          </div>
+          <h2>{item.title}</h2>
+          <p>{item.memo || item.source}</p>
+          <div className="tag-row">
+            {item.tags.map((tag) => (
+              <span key={tag}>#{tag}</span>
+            ))}
+          </div>
+        </div>
+      </button>
+      <div className="card-actions">
+        {item.url ? (
+          <a
+            href={item.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={() => onRevisit(item.id)}
+          >
+            <ExternalLink size={15} />
+            열기
+          </a>
         ) : (
-          <TypeIcon size={24} />
+          <button type="button" onClick={() => onRevisit(item.id)}>
+            <Clock3 size={15} />
+            본 것으로 표시
+          </button>
         )}
+        <button type="button" onClick={() => onDelete(item.id)}>
+          <Trash2 size={15} />
+          지우기
+        </button>
       </div>
-      <div className="card-body">
-        <div className="card-meta">
-          <span>{folder?.name || "전체"}</span>
-          <span>{formatDate(item.createdAt)}</span>
+    </article>
+  );
+}
+
+function ItemDetail({ item, folder, onClose, onDelete, onRevisit }) {
+  const TypeIcon =
+    item.type === "image" ? ImageIcon : item.type === "note" ? FileText : LinkIcon;
+
+  return (
+    <div className="overlay detail-overlay" role="dialog" aria-modal="true" aria-label="저장 항목 크게 보기">
+      <article className={`sheet detail-sheet ${item.type}`}>
+        <div className="sheet-header">
+          <div>
+            <span className="eyebrow">{folder?.name || "전체"}</span>
+            <h2>{item.title}</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="닫기">
+            <X size={20} />
+          </button>
         </div>
-        <h2>{item.title}</h2>
-        <p>{item.memo || item.source}</p>
-        <div className="tag-row">
-          {item.tags.map((tag) => (
-            <span key={tag}>#{tag}</span>
-          ))}
+
+        <div className="detail-hero">
+          {item.type === "image" && item.image ? (
+            <img src={item.image} alt="" />
+          ) : (
+            <TypeIcon size={42} />
+          )}
         </div>
-        <div className="card-actions">
+
+        <dl className="detail-meta">
+          <div>
+            <dt>저장일</dt>
+            <dd>{formatDate(item.createdAt)}</dd>
+          </div>
+          <div>
+            <dt>다시 봄</dt>
+            <dd>{item.revisits}회</dd>
+          </div>
+          <div>
+            <dt>출처</dt>
+            <dd>{item.source}</dd>
+          </div>
+        </dl>
+
+        {item.memo ? (
+          <section className="detail-section">
+            <h3>메모</h3>
+            <p>{item.memo}</p>
+          </section>
+        ) : null}
+
+        {item.url ? (
+          <section className="detail-section">
+            <h3>링크</h3>
+            <a className="detail-url" href={item.url} target="_blank" rel="noreferrer">
+              {item.url}
+            </a>
+          </section>
+        ) : null}
+
+        {item.tags.length > 0 ? (
+          <div className="detail-tags">
+            {item.tags.map((tag) => (
+              <span key={tag}>#{tag}</span>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="detail-actions">
           {item.url ? (
             <a
+              className="primary-button"
               href={item.url}
               target="_blank"
               rel="noreferrer"
               onClick={() => onRevisit(item.id)}
             >
-              <ExternalLink size={15} />
-              열기
+              <ExternalLink size={17} />
+              링크 열기
             </a>
           ) : (
-            <button type="button" onClick={() => onRevisit(item.id)}>
-              <Clock3 size={15} />
+            <button className="primary-button" type="button" onClick={() => onRevisit(item.id)}>
+              <Clock3 size={17} />
               본 것으로 표시
             </button>
           )}
-          <button type="button" onClick={() => onDelete(item.id)}>
-            <Trash2 size={15} />
+          <button
+            className="danger-button"
+            type="button"
+            onClick={() => onDelete(item.id)}
+          >
+            <Trash2 size={17} />
             지우기
           </button>
         </div>
-      </div>
-    </article>
+      </article>
+    </div>
   );
 }
 
