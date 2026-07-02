@@ -6,7 +6,6 @@ import {
   Check,
   ChevronRight,
   Clock3,
-  Cloud,
   ExternalLink,
   FileText,
   Folder,
@@ -15,7 +14,6 @@ import {
   Link as LinkIcon,
   MoreHorizontal,
   Plus,
-  RefreshCw,
   Search,
   Sparkles,
   Star,
@@ -26,7 +24,7 @@ import {
 import "./styles.css";
 
 const STORAGE_KEY = "mapaiving:v1";
-const SYNC_KEY_STORAGE = "mapaiving:sync-key";
+const AUTO_SYNC_KEY = "mapaiving-private-state";
 const SYNC_API_URL =
   import.meta.env.VITE_SYNC_API_URL ||
   "https://mapaiving-sync.reply-marketing-ads.workers.dev";
@@ -101,18 +99,6 @@ function loadState() {
 
 function saveState(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-function loadSyncKey() {
-  return localStorage.getItem(SYNC_KEY_STORAGE) || "";
-}
-
-function saveSyncKey(value) {
-  if (value) {
-    localStorage.setItem(SYNC_KEY_STORAGE, value);
-  } else {
-    localStorage.removeItem(SYNC_KEY_STORAGE);
-  }
 }
 
 function touchState(state) {
@@ -198,11 +184,6 @@ function navigate(path) {
 function App() {
   const [route, setRoute] = useState(getRoute);
   const [state, setState] = useState(loadState);
-  const [syncKey, setSyncKey] = useState(loadSyncKey);
-  const [syncStatus, setSyncStatus] = useState({
-    tone: "muted",
-    message: "동기화 꺼짐",
-  });
   const remoteReadyRef = useRef(false);
   const saveTimerRef = useRef(null);
 
@@ -217,29 +198,15 @@ function App() {
   }, [state]);
 
   useEffect(() => {
-    saveSyncKey(syncKey.trim());
-  }, [syncKey]);
-
-  useEffect(() => {
-    const cleanKey = syncKey.trim();
+    const cleanKey = AUTO_SYNC_KEY;
     remoteReadyRef.current = false;
-    if (!cleanKey) {
-      setSyncStatus({ tone: "muted", message: "동기화 꺼짐" });
-      return undefined;
-    }
-
-    if (cleanKey.length < 4) {
-      setSyncStatus({ tone: "error", message: "4자 이상 필요" });
-      return undefined;
-    }
 
     if (!SYNC_API_URL) {
-      setSyncStatus({ tone: "error", message: "동기화 주소 없음" });
+      console.warn("Sync API URL is missing.");
       return undefined;
     }
 
     const controller = new AbortController();
-    setSyncStatus({ tone: "loading", message: "불러오는 중" });
 
     pullRemoteState(cleanKey, controller.signal)
       .then((remote) => {
@@ -250,16 +217,13 @@ function App() {
           if (remoteTime > localTime) {
             setState(remoteState);
           }
-          setSyncStatus({ tone: "ok", message: "동기화 연결됨" });
         } else {
-          return pushRemoteState(cleanKey, state, controller.signal).then(() => {
-            setSyncStatus({ tone: "ok", message: "새 동기화 시작" });
-          });
+          return pushRemoteState(cleanKey, state, controller.signal);
         }
       })
       .catch((error) => {
         if (error.name === "AbortError") return;
-        setSyncStatus({ tone: "error", message: error.message });
+        console.warn(error.message);
       })
       .finally(() => {
         if (!controller.signal.aborted) {
@@ -268,27 +232,20 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [syncKey]);
+  }, []);
 
   useEffect(() => {
-    const cleanKey = syncKey.trim();
+    const cleanKey = AUTO_SYNC_KEY;
     if (!cleanKey || !SYNC_API_URL || !remoteReadyRef.current) return undefined;
 
-    setSyncStatus((current) => ({
-      tone: "loading",
-      message: current.tone === "error" ? "다시 저장 중" : "저장 중",
-    }));
     clearTimeout(saveTimerRef.current);
     const controller = new AbortController();
 
     saveTimerRef.current = setTimeout(() => {
       pushRemoteState(cleanKey, state, controller.signal)
-        .then(() => {
-          setSyncStatus({ tone: "ok", message: "방금 저장됨" });
-        })
         .catch((error) => {
           if (error.name === "AbortError") return;
-          setSyncStatus({ tone: "error", message: error.message });
+          console.warn(error.message);
         });
     }, 1400);
 
@@ -296,7 +253,7 @@ function App() {
       clearTimeout(saveTimerRef.current);
       controller.abort();
     };
-  }, [state, syncKey]);
+  }, [state]);
 
   const updateState = (updater) => {
     setState((current) => touchState(
@@ -316,14 +273,11 @@ function App() {
     <Home
       state={state}
       updateState={updateState}
-      syncKey={syncKey}
-      setSyncKey={setSyncKey}
-      syncStatus={syncStatus}
     />
   );
 }
 
-function Home({ state, updateState, syncKey, setSyncKey, syncStatus }) {
+function Home({ state, updateState }) {
   const [activeFolder, setActiveFolder] = useState("all");
   const [sortBy, setSortBy] = useState("recent");
   const [query, setQuery] = useState("");
@@ -508,12 +462,6 @@ function Home({ state, updateState, syncKey, setSyncKey, syncStatus }) {
           ) : null}
         </div>
 
-        <SyncPanel
-          syncKey={syncKey}
-          setSyncKey={setSyncKey}
-          syncStatus={syncStatus}
-        />
-
         <TodoPanel
           todos={state.todos}
           addTasks={addTasks}
@@ -565,53 +513,6 @@ function Home({ state, updateState, syncKey, setSyncKey, syncStatus }) {
         />
       ) : null}
     </main>
-  );
-}
-
-function SyncPanel({ syncKey, setSyncKey, syncStatus }) {
-  const [draftKey, setDraftKey] = useState(syncKey);
-  const connected = syncKey.trim().length > 0;
-  const isChanged = draftKey.trim() !== syncKey.trim();
-
-  useEffect(() => {
-    setDraftKey(syncKey);
-  }, [syncKey]);
-
-  const submit = (event) => {
-    event.preventDefault();
-    setSyncKey(draftKey.trim());
-  };
-
-  const disconnect = () => {
-    setDraftKey("");
-    setSyncKey("");
-  };
-
-  return (
-    <form
-      className={`sync-panel ${syncStatus.tone}`}
-      aria-label="기기 동기화"
-      onSubmit={submit}
-    >
-      <div className="sync-icon">
-        {connected ? <Cloud size={18} /> : <RefreshCw size={18} />}
-      </div>
-      <label>
-        <span>동기화 키</span>
-        <input
-          value={draftKey}
-          onChange={(event) => setDraftKey(event.target.value)}
-          placeholder="예: mapa-private"
-          aria-label="기기 동기화 키"
-        />
-      </label>
-      <div className="sync-side">
-        <span className="sync-status">{syncStatus.message}</span>
-        <button type={isChanged ? "submit" : "button"} onClick={isChanged ? undefined : disconnect}>
-          {isChanged ? "연결" : connected ? "해제" : "연결"}
-        </button>
-      </div>
-    </form>
   );
 }
 
@@ -1284,10 +1185,10 @@ function Announcement({ state, updateState }) {
               <li>완료한 항목 한 번에 지우기</li>
               <li>여러 줄 붙여넣기 시 할 일 자동 생성</li>
               <li>링크, 이미지, 메모 저장</li>
-              <li>동기화 키 기반 기기 간 저장</li>
+              <li>Cloudflare 기반 자동 저장</li>
             </ul>
             <p>
-              같은 동기화 키를 다른 기기에 입력하면 같은 데이터를 이어서 볼 수 있어요.
+              같은 주소로 접속하면 저장한 데이터를 이어서 볼 수 있어요.
             </p>
           </div>
         </article>
