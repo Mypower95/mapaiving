@@ -35,8 +35,12 @@ jobs:
         env:
           GITHUB_PAGES: "true"
 
-      - name: Add SPA fallback
-        run: cp dist/index.html dist/404.html
+      - name: Add static route fallbacks
+        run: |
+          mkdir -p dist/onboarding dist/settings/announcement/17
+          cp dist/index.html dist/onboarding/index.html
+          cp dist/index.html dist/settings/announcement/17/index.html
+          cp dist/index.html dist/404.html
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
