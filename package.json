@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "dev:api": "wrangler dev --port 8787",
+    "deploy:api": "wrangler deploy"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",
@@ -15,5 +17,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "wrangler": "^4.54.0"
+  }
 }

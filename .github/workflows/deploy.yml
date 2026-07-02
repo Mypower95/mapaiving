@@ -34,6 +34,7 @@ jobs:
         run: npm run build
         env:
           GITHUB_PAGES: "true"
+          VITE_SYNC_API_URL: "https://mapaiving-sync.reply-marketing-ads.workers.dev"
 
       - name: Add static route fallbacks
         run: |

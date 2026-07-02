@@ -1,23 +1,22 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Bell,
   Bookmark,
-  Camera,
   Check,
   ChevronRight,
   Clock3,
+  Cloud,
   ExternalLink,
   FileText,
   Folder,
   FolderPlus,
   Image as ImageIcon,
   Link as LinkIcon,
-  Menu,
   MoreHorizontal,
   Plus,
+  RefreshCw,
   Search,
-  Settings,
   Sparkles,
   Star,
   Trash2,
@@ -27,6 +26,10 @@ import {
 import "./styles.css";
 
 const STORAGE_KEY = "mapaiving:v1";
+const SYNC_KEY_STORAGE = "mapaiving:sync-key";
+const SYNC_API_URL =
+  import.meta.env.VITE_SYNC_API_URL ||
+  "https://mapaiving-sync.reply-marketing-ads.workers.dev";
 const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 const defaultTodos = [
@@ -70,6 +73,7 @@ const initialState = {
   todos: defaultTodos,
   announcementSeen: false,
   onboardingDone: false,
+  updatedAt: new Date().toISOString(),
 };
 
 function normalizeState(value) {
@@ -81,6 +85,7 @@ function normalizeState(value) {
     folders: value?.folders || initialState.folders,
     items: value?.items || initialState.items,
     todos,
+    updatedAt: value?.updatedAt || initialState.updatedAt,
   };
 }
 
@@ -96,6 +101,53 @@ function loadState() {
 
 function saveState(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function loadSyncKey() {
+  return localStorage.getItem(SYNC_KEY_STORAGE) || "";
+}
+
+function saveSyncKey(value) {
+  if (value) {
+    localStorage.setItem(SYNC_KEY_STORAGE, value);
+  } else {
+    localStorage.removeItem(SYNC_KEY_STORAGE);
+  }
+}
+
+function touchState(state) {
+  return {
+    ...state,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function getSyncUrl(syncKey) {
+  return `${SYNC_API_URL.replace(/\/$/, "")}/state/${encodeURIComponent(syncKey)}`;
+}
+
+async function pullRemoteState(syncKey, signal) {
+  const response = await fetch(getSyncUrl(syncKey), { signal });
+  if (!response.ok) {
+    throw new Error("동기화 정보를 불러오지 못했어요.");
+  }
+  return response.json();
+}
+
+async function pushRemoteState(syncKey, state, signal) {
+  const response = await fetch(getSyncUrl(syncKey), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      state,
+      updatedAt: state.updatedAt || new Date().toISOString(),
+    }),
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error("동기화 저장에 실패했어요.");
+  }
+  return response.json();
 }
 
 function getRoute() {
@@ -146,6 +198,13 @@ function navigate(path) {
 function App() {
   const [route, setRoute] = useState(getRoute);
   const [state, setState] = useState(loadState);
+  const [syncKey, setSyncKey] = useState(loadSyncKey);
+  const [syncStatus, setSyncStatus] = useState({
+    tone: "muted",
+    message: "동기화 꺼짐",
+  });
+  const remoteReadyRef = useRef(false);
+  const saveTimerRef = useRef(null);
 
   useEffect(() => {
     const onPopState = () => setRoute(getRoute());
@@ -157,10 +216,92 @@ function App() {
     saveState(state);
   }, [state]);
 
+  useEffect(() => {
+    saveSyncKey(syncKey.trim());
+  }, [syncKey]);
+
+  useEffect(() => {
+    const cleanKey = syncKey.trim();
+    remoteReadyRef.current = false;
+    if (!cleanKey) {
+      setSyncStatus({ tone: "muted", message: "동기화 꺼짐" });
+      return undefined;
+    }
+
+    if (cleanKey.length < 4) {
+      setSyncStatus({ tone: "error", message: "4자 이상 필요" });
+      return undefined;
+    }
+
+    if (!SYNC_API_URL) {
+      setSyncStatus({ tone: "error", message: "동기화 주소 없음" });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setSyncStatus({ tone: "loading", message: "불러오는 중" });
+
+    pullRemoteState(cleanKey, controller.signal)
+      .then((remote) => {
+        if (remote?.state) {
+          const remoteState = normalizeState(remote.state);
+          const localTime = new Date(state.updatedAt || 0).getTime();
+          const remoteTime = new Date(remoteState.updatedAt || 0).getTime();
+          if (remoteTime > localTime) {
+            setState(remoteState);
+          }
+          setSyncStatus({ tone: "ok", message: "동기화 연결됨" });
+        } else {
+          return pushRemoteState(cleanKey, state, controller.signal).then(() => {
+            setSyncStatus({ tone: "ok", message: "새 동기화 시작" });
+          });
+        }
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setSyncStatus({ tone: "error", message: error.message });
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          remoteReadyRef.current = true;
+        }
+      });
+
+    return () => controller.abort();
+  }, [syncKey]);
+
+  useEffect(() => {
+    const cleanKey = syncKey.trim();
+    if (!cleanKey || !SYNC_API_URL || !remoteReadyRef.current) return undefined;
+
+    setSyncStatus((current) => ({
+      tone: "loading",
+      message: current.tone === "error" ? "다시 저장 중" : "저장 중",
+    }));
+    clearTimeout(saveTimerRef.current);
+    const controller = new AbortController();
+
+    saveTimerRef.current = setTimeout(() => {
+      pushRemoteState(cleanKey, state, controller.signal)
+        .then(() => {
+          setSyncStatus({ tone: "ok", message: "방금 저장됨" });
+        })
+        .catch((error) => {
+          if (error.name === "AbortError") return;
+          setSyncStatus({ tone: "error", message: error.message });
+        });
+    }, 1400);
+
+    return () => {
+      clearTimeout(saveTimerRef.current);
+      controller.abort();
+    };
+  }, [state, syncKey]);
+
   const updateState = (updater) => {
-    setState((current) =>
+    setState((current) => touchState(
       typeof updater === "function" ? updater(current) : updater,
-    );
+    ));
   };
 
   if (route === "onboarding") {
@@ -171,10 +312,18 @@ function App() {
     return <Announcement state={state} updateState={updateState} />;
   }
 
-  return <Home state={state} updateState={updateState} />;
+  return (
+    <Home
+      state={state}
+      updateState={updateState}
+      syncKey={syncKey}
+      setSyncKey={setSyncKey}
+      syncStatus={syncStatus}
+    />
+  );
 }
 
-function Home({ state, updateState }) {
+function Home({ state, updateState, syncKey, setSyncKey, syncStatus }) {
   const [activeFolder, setActiveFolder] = useState("all");
   const [sortBy, setSortBy] = useState("recent");
   const [query, setQuery] = useState("");
@@ -359,6 +508,12 @@ function Home({ state, updateState }) {
           ) : null}
         </div>
 
+        <SyncPanel
+          syncKey={syncKey}
+          setSyncKey={setSyncKey}
+          syncStatus={syncStatus}
+        />
+
         <TodoPanel
           todos={state.todos}
           addTasks={addTasks}
@@ -388,8 +543,6 @@ function Home({ state, updateState }) {
           onRevisit={revisitItem}
           onOpenComposer={() => setComposerOpen(true)}
         />
-
-        <BottomNav onOpenComposer={() => setComposerOpen(true)} />
       </section>
 
       {isComposerOpen ? (
@@ -412,6 +565,53 @@ function Home({ state, updateState }) {
         />
       ) : null}
     </main>
+  );
+}
+
+function SyncPanel({ syncKey, setSyncKey, syncStatus }) {
+  const [draftKey, setDraftKey] = useState(syncKey);
+  const connected = syncKey.trim().length > 0;
+  const isChanged = draftKey.trim() !== syncKey.trim();
+
+  useEffect(() => {
+    setDraftKey(syncKey);
+  }, [syncKey]);
+
+  const submit = (event) => {
+    event.preventDefault();
+    setSyncKey(draftKey.trim());
+  };
+
+  const disconnect = () => {
+    setDraftKey("");
+    setSyncKey("");
+  };
+
+  return (
+    <form
+      className={`sync-panel ${syncStatus.tone}`}
+      aria-label="기기 동기화"
+      onSubmit={submit}
+    >
+      <div className="sync-icon">
+        {connected ? <Cloud size={18} /> : <RefreshCw size={18} />}
+      </div>
+      <label>
+        <span>동기화 키</span>
+        <input
+          value={draftKey}
+          onChange={(event) => setDraftKey(event.target.value)}
+          placeholder="예: mapa-private"
+          aria-label="기기 동기화 키"
+        />
+      </label>
+      <div className="sync-side">
+        <span className="sync-status">{syncStatus.message}</span>
+        <button type={isChanged ? "submit" : "button"} onClick={isChanged ? undefined : disconnect}>
+          {isChanged ? "연결" : connected ? "해제" : "연결"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -532,23 +732,16 @@ function TodoPanel({
 
 function Header({ onOpenComposer }) {
   return (
-    <header className="app-header">
-      <button className="icon-button" type="button" aria-label="메뉴">
-        <Menu size={20} />
-      </button>
-      <button className="brand" type="button" onClick={() => navigate("/")}>
-        <span className="brand-mark">M</span>
-        <span>마파이빙</span>
+    <header className="app-header compact-header">
+      <button
+        className="text-button"
+        type="button"
+        onClick={() => navigate("/settings/announcement/17")}
+      >
+        <Bell size={16} />
+        업데이트
       </button>
       <div className="header-actions">
-        <button
-          className="icon-button"
-          type="button"
-          onClick={() => navigate("/settings/announcement/17")}
-          aria-label="공지사항"
-        >
-          <Bell size={18} />
-        </button>
         <button
           className="icon-button primary"
           type="button"
@@ -567,12 +760,7 @@ function StatsPanel({ stats }) {
     <section className="stats-panel">
       <div className="stats-copy">
         <p>개인 아카이브</p>
-        <h1>나중에 볼 것들을<br />한곳에 모아둬요</h1>
-      </div>
-      <div className="mascot-card" aria-hidden="true">
-        <div className="archive-box">
-          <Bookmark size={28} />
-        </div>
+        <h1>오늘 볼 것만 남겨요</h1>
       </div>
       <div className="stat-grid">
         <Stat label="저장" value={stats.total} unit="개" />
@@ -608,12 +796,6 @@ function QuickLinks() {
       title: "업데이트",
       description: "이번 버전 보기",
       path: "/settings/announcement/17",
-    },
-    {
-      icon: Camera,
-      title: "이미지 보관",
-      description: "캡처도 같이 저장",
-      path: "/",
     },
   ];
 
@@ -781,24 +963,6 @@ function ContentCard({ item, folder, onDelete, onRevisit }) {
         </div>
       </div>
     </article>
-  );
-}
-
-function BottomNav({ onOpenComposer }) {
-  return (
-    <nav className="bottom-nav" aria-label="하단 메뉴">
-      <button type="button" className="active">
-        <Bookmark size={18} />
-        홈
-      </button>
-      <button type="button" onClick={onOpenComposer} className="center-action">
-        <Plus size={24} />
-      </button>
-      <button type="button" onClick={() => navigate("/onboarding")}>
-        <Settings size={18} />
-        설정
-      </button>
-    </nav>
   );
 }
 
@@ -1050,9 +1214,8 @@ function Onboarding({ state, updateState }) {
     <main className="page onboarding-page">
       <section className="phone-shell centered">
         <header className="simple-header">
-          <button className="brand" type="button" onClick={() => navigate("/")}>
-            <span className="brand-mark">M</span>
-            <span>마파이빙</span>
+          <button className="icon-button" type="button" onClick={() => navigate("/")}>
+            <X size={20} />
           </button>
           <button className="text-button" type="button" onClick={() => navigate("/")}>
             건너뛰기
@@ -1121,10 +1284,10 @@ function Announcement({ state, updateState }) {
               <li>완료한 항목 한 번에 지우기</li>
               <li>여러 줄 붙여넣기 시 할 일 자동 생성</li>
               <li>링크, 이미지, 메모 저장</li>
+              <li>동기화 키 기반 기기 간 저장</li>
             </ul>
             <p>
-              지금은 이 브라우저 안에만 저장돼요. 여러 기기에서 쓰려면 로그인과 서버 저장이
-              필요합니다.
+              같은 동기화 키를 다른 기기에 입력하면 같은 데이터를 이어서 볼 수 있어요.
             </p>
           </div>
         </article>
