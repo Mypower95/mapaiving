@@ -87,6 +87,37 @@ function normalizeState(value) {
   };
 }
 
+function mergeById(primary = [], secondary = []) {
+  const primaryIds = new Set(primary.map((item) => item.id));
+  return [
+    ...primary,
+    ...secondary.filter((item) => item?.id && !primaryIds.has(item.id)),
+  ];
+}
+
+function statesMatch(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function mergeStates(localState, remoteState) {
+  const local = normalizeState(localState);
+  const remote = normalizeState(remoteState);
+  const localTime = new Date(local.updatedAt || 0).getTime();
+  const remoteTime = new Date(remote.updatedAt || 0).getTime();
+  const primary = localTime >= remoteTime ? local : remote;
+  const secondary = primary === local ? remote : local;
+  const validTimes = [localTime, remoteTime].filter(Number.isFinite);
+  const latestTime = validTimes.length ? Math.max(...validTimes) : Date.now();
+
+  return normalizeState({
+    ...primary,
+    folders: mergeById(primary.folders, secondary.folders),
+    items: mergeById(primary.items, secondary.items),
+    todos: mergeById(primary.todos, secondary.todos),
+    updatedAt: new Date(latestTime).toISOString(),
+  });
+}
+
 function loadState() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -212,10 +243,17 @@ function App() {
       .then((remote) => {
         if (remote?.state) {
           const remoteState = normalizeState(remote.state);
-          const localTime = new Date(state.updatedAt || 0).getTime();
-          const remoteTime = new Date(remoteState.updatedAt || 0).getTime();
-          if (remoteTime > localTime) {
-            setState(remoteState);
+          const mergedState = mergeStates(state, remoteState);
+          const shouldUpdateLocal = !statesMatch(mergedState, state);
+          const shouldUpdateRemote = !statesMatch(mergedState, remoteState);
+          const nextState = shouldUpdateRemote ? touchState(mergedState) : mergedState;
+
+          if (shouldUpdateLocal) {
+            setState(nextState);
+          }
+
+          if (shouldUpdateRemote) {
+            return pushRemoteState(cleanKey, nextState, controller.signal);
           }
         } else {
           return pushRemoteState(cleanKey, state, controller.signal);
